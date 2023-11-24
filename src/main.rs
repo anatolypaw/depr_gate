@@ -96,11 +96,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //Проверяем, надо ли для этого продукта запрашивать марки
             if free_codes_for_print < how_many_code_store as i64 {
-                println!(
-                    "{}",
-                    "    У этого продукта мало кодов! надо запросить новые".cyan()
-                );
-
                 //Запрашиваем марки для этого продукта из шлюза
                 //Делаем запрос марок с сервера
 
@@ -140,7 +135,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //Для каждого кода в jsone'е ..
                 for hm in jsn.marks {
                     let code_in_base64 = hm.get("code").unwrap();
-                    println!("{} {}", "        Код в base64".bold(), code_in_base64);
 
                     let code = general_purpose::STANDARD.decode(&code_in_base64).unwrap();
                     let code = str::from_utf8(&code).unwrap();
@@ -157,14 +151,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let gtin = &re["gtin"];
                     let serial = &re["serial"];
                     let crypto = &re["crypto"];
-
-                    println!(
-                        "        {} gtin: {} serial: {} crypto: {}",
-                        "Код распарсенный".bold(),
-                        gtin,
-                        serial,
-                        crypto
-                    );
 
                     //Добавляем код в базу
                     print!("            {}", "Добавляем этот код в базу... ".cyan());
