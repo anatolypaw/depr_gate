@@ -312,14 +312,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let crypto = &re["crypto"];
 
                     println!(
-                        " {} gtin: {} serial: {} crypto: {}",
-                        "Распарсенный:".cyan(),
-                        gtin,
-                        serial,
-                        crypto
-                    );
-
-                    println!(
                         "                {}",
                         "Записываю в базу, что код принят шлюзом".cyan()
                     );
