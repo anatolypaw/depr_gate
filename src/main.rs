@@ -254,7 +254,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print!("{} {:?}", " Полный формат:".cyan(), code_full_format);
 
                 let code_in_base64 = general_purpose::STANDARD.encode(&code_full_format);
-                println!("{} {}", " base64:".cyan(), code_in_base64);
 
                 let mark = Mark {
                     proddate: proddate,
