@@ -26,7 +26,7 @@ struct Mark {
     proddate: String,
     code: String,
     #[serde(rename = "type")]
-    type_field: i64,
+    type_field: i32,
 }
 
 //Структура для разбора JSON принятых шлюзом марок
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Подключаемся к базе данных
 
         let (client, connection) =
-            tokio_postgres::connect("postgresql://test:test@10.0.0.6/test_bd", NoTls).await?;
+            tokio_postgres::connect("postgresql://test:test@127.0.0.1/test_bd", NoTls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -58,9 +58,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         //Запрашиваем gtin продуктов, для которых нужно запросить марки
         let rows = client
-                .query("-- 1 Выбрать gtin продукта, которые нужно загружать со шлюза
-                            select gtin, description, how_many_code_store from goods where get_codes = true", &[])
-                .await?;
+            .query(
+                "-- 1 Выбрать gtin продукта, которые нужно загружать со шлюза
+                        select
+                            gtin,
+                            description,
+                            how_many_code_store
+                        from
+                            goods
+                        where
+                            get_codes = true",
+                &[],
+            )
+            .await?;
 
         //Обрабатываем ответ на запрос gtin продуктов, для которых нужно запросить марки
         for row in rows {
@@ -76,30 +86,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //Делаем запрос количеста кодов доступных для печати для этого продукта
             let rows = client
-            .query("-- 6 Подсчитать их количество
-                    select count(code_id) as not_used_count from (
-                        -- 4 Вывести коды и их последнее событие, убрав дубли кодов 
-                        select DISTINCT ON (code_id) code_id as code_id, event_id
-                        FROM (
-                            -- 1 Выбрать коды
-                            select code_id, history_id, event_id from codes 
-                            -- 2 и события, которые относятся к кодам
-                            join history using (code_id)
-                            where good_id = (select good_id from goods where gtin = $1::TEXT) -- этого продукта)
-                            
-                            -- 3 отсортировать коды по их code_id и внутри этой сортировки отсортировать их по history_id. Первой строкой будет самое новое событие (по его номеру)
-                            ORDER BY code_id, history_id desc
-                        ) as foo
-                    ) as bar
-                    -- 5 Подсчитать только те коды, у который последнее событие - получен из шлюза
-                    where event_id = (select event_id from events where event_name = 'received_from_gateway')", &[&gtin])
+            .query("-- 2 Выбрать коды, которые не отправлялись для печати, а значит доступн для печати
+                    select count(code_id) from	codes 
+                    where good_id = (select good_id from goods where gtin = $1::TEXT) and sended_to_aw is null", &[&gtin])
             .await?;
 
-            let not_used_codes_count: i64 = rows[0].get("not_used_count");
-            println!("{}", not_used_codes_count);
+            let free_codes_for_print: i64 = rows[0].get("count");
+            println!("{}", free_codes_for_print);
 
             //Проверяем, надо ли для этого продукта запрашивать марки
-            if not_used_codes_count < how_many_code_store as i64 {
+            if free_codes_for_print < how_many_code_store as i64 {
                 println!(
                     "{}",
                     "    У этого продукта мало кодов! надо запросить новые".cyan()
@@ -107,8 +103,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 //Запрашиваем марки для этого продукта из шлюза
                 //Делаем запрос марок с сервера
+
+                //Вычисляем, сколько кодов запросить
+                let mut how_many_codes_get = how_many_code_store as i64 - free_codes_for_print;
+                if how_many_codes_get > 10 {
+                    how_many_codes_get = 10;
+                }
+
                 let url = format!(
-                    "http://192.168.10.23/exchangemarks/hs/api/getmarks?gtin={gtin}&limit=500"
+                    "http://192.168.10.203/exchangemarks/hs/api/getmarks?gtin={gtin}&limit={}",
+                    how_many_codes_get
                 );
                 println!("{} {}", "    Делаем запрос марок с сервера: ".cyan(), url);
 
@@ -122,7 +126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 //Парсим JSON
-                let jsn: GetMarksStruct = resp.json().await?;
+                let jsn: GetMarksStruct = match resp.json().await {
+                    Ok(jsn) => jsn,
+                    Err(error) => {
+                        print!("{}", "ERROR: ".red());
+                        println!("{}", error);
+                        continue;
+                    }
+                };
 
                 println!("{}", "        Шлюз прислал коды: ".cyan());
 
@@ -158,35 +169,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //Добавляем код в базу
                     print!("            {}", "Добавляем этот код в базу... ".cyan());
                     let rows = client
-                    .query("with added_code_id as (
-                                -- 1 Добавляем в таблицу кодов код
-                                insert into codes (good_id, serial, crypto) 
-                                    values (
-                                    (select good_id from goods where gtin = $1::TEXT),
-                                    $2::TEXT, -- serial
-                                    $3::TEXT) -- crypto
-                                -- 2 Возвращаем присовенный ему id
-                                returning code_id
-                            )
-                            -- 3 Добавляем запись в историю, что код получен из шлюза
-                            insert into history (code_id, event_id, aw_id)
-                                values (
-                                (select code_id from added_code_id),
-                                (select event_id from events where event_name = 'received_from_gateway'),
-                                (select aw_id from aw where aw_name = 'gate_exchanger')
-                            )
-                            -- 4 Возвращаем id записи истории и id кода
-                            returning history_id, code_id;", &[&gtin, &serial, &crypto])
-                    .await?;
+                        .query(
+                            "insert
+                                into codes (good_id, serial, crypto, loaded_from_gate)
+                            values (
+                                (select good_id from goods where gtin = $1::TEXT),
+                                $2::TEXT,
+                                $3::TEXT,
+                                now())
+                            returning code_id;",
+                            &[&gtin, &serial, &crypto],
+                        )
+                        .await?;
 
-                    let history_id: i64 = rows[0].get("history_id");
                     let code_id: i64 = rows[0].get("code_id");
-                    println!(
-                        "{} history_id: {}, code_id: {} \n",
-                        "успешно.".green(),
-                        history_id,
-                        code_id
-                    );
+                    println!("{} code_id: {} \n", "успешно.".green(), code_id);
                 }
             } else {
                 println!(
@@ -224,27 +221,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //Делаем запрос 100 кодов, готовых для выгрузки
             let codes = client
-            .query("-- 6 Вывести коды заданного продукта
-                    select serial, crypto, proddate from (
-                                -- 4 Вывести коды и их последнее событие, убрав дубли кодов 
-                                select DISTINCT ON (code_id) code_id as code_id, event_id, serial, crypto, proddate
-                                FROM (
-                                    -- 1 Выбрать коды
-                                    select code_id, history_id, event_id, serial, crypto, proddate from codes 
-                                    -- 2 и события, которые относятся к кодам
-                                    join history using (code_id)
-                                    where good_id = (select good_id from goods where gtin = $1::TEXT) -- этого продукта)
-                                    
-                                    -- 3 отсортировать коды по их code_id и внутри этой сортировки отсортировать их по history_id. Первой строкой будет самое новое событие (по его номеру)
-                                    ORDER BY code_id, history_id desc
-                                ) as foo
-                    ) as bar
-                    -- 5  Отфильтровать коды, у которых последнее события - произведен и стоит дата
-                    where event_id = (select event_id from events where event_name = 'printed_code_produced') and proddate is not null
-                    limit 2;", &[&gtin])
-            .await?;
+                .query(
+                    "select serial, crypto, prod_date from codes where 
+                        good_id = (select good_id from goods where gtin = $1::TEXT)
+                        and prod_date is not null 
+                        and sended_to_gate is null
+                    limit 100",
+                    &[&gtin],
+                )
+                .await?;
 
-            if codes.len() == 0 {
+            if codes.is_empty() {
                 println!("    {}\n", "Нет кодов на выгрузку".cyan());
                 continue;
             }
@@ -256,10 +243,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for code in codes {
                 let serial: &str = code.get("serial");
                 let crypto: &str = code.get("crypto");
-                let proddate: NaiveDate = code.get("proddate");
+                let proddate: NaiveDate = code.get("prod_date");
                 let proddate = proddate.format("%Y%m%d").to_string();
+                let code_type: i32 = code.get("type");
 
-                print!("        {} {} {} от {}", gtin, serial, crypto, &proddate);
+                print!("        {} {} {} {} от {}", gtin, serial, crypto, code_type, &proddate);
 
                 let code_full_format =
                     format!("01{}21{}{}93{}", gtin, serial, 0x1D as char, crypto);
@@ -271,7 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mark = Mark {
                     proddate: proddate,
                     code: code_in_base64,
-                    type_field: 1,
+                    type_field: code_type,
                 };
                 marks.push(mark);
             }
@@ -286,11 +274,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let rollout_marks_json = serde_json::to_string_pretty(&rollout_marks_struct).unwrap();
 
-            println!("{}", rollout_marks_json);
-
-            //Запрашиваем марки для этого продукта из шлюза
-            //Делаем запрос марок с сервера
-            let url = format!("http://192.168.10.23/exchangemarks/hs/api/rollout?gtin={gtin}");
+            //Передаем марки в шлюз
+            let url = format!("http://192.168.10.203/exchangemarks/hs/api/rollout?gtin={gtin}");
             print!("        {} {} ... ", "    Передаю в шлюз: ".cyan(), url);
 
             let http_client = reqwest::Client::new();
@@ -354,29 +339,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     //Добавляем код в базу
                     print!("                {}", "Добавляем этот код в базу... ".cyan());
-                    let rows = client.query("with appended_code_id as (
-                                                            -- 1 Ищем этот код в бд
-                                                            select code_id from codes where code_id = (select code_id from goods where gtin = $1::TEXT) and serial = $2::TEXT and crypto = $3::TEXT
-                                                        )
-                                                        -- 2 Добавляем запись в историю, что код принят шлюзом
-                                                        insert into history (code_id, event_id, aw_id)
-                                                            values (
-                                                            (select code_id from appended_code_id),
-                                                            (select event_id from events where event_name = 'gate_accept_rollout_code'),
-                                                            (select aw_id from aw where aw_name = 'gate_exchanger')
-                                                        )
-                                                        -- 4 Возвращаем id записи истории и id кода
-                                                        returning history_id, code_id;
-                                                        ", &[&gtin, &serial, &crypto]).await?;
+                    let rows = client.query("-- Сделать запись в БД, что код выгружен в шлюз
+                                            update
+                                                codes
+                                            set
+                                                sended_to_gate = now()
+                                            where
+                                                good_id = (select good_id from goods where gtin = $1::TEXT)
+                                                and serial = $2::TEXT
+                                                and crypto = $3::TEXT
+                                            returning code_id,
+                                                serial,
+                                                crypto", &[&gtin, &serial, &crypto]).await?;
 
-                    let history_id: i64 = rows[0].get("history_id");
                     let code_id: i64 = rows[0].get("code_id");
-                    println!(
-                        "{} history_id: {}, code_id: {} \n",
-                        "успешно.".green(),
-                        history_id,
-                        code_id
-                    );
+                    println!("{} code_id: {} \n", "успешно.".green(), code_id);
                 } else {
                     println!(" {}", "ERROR: Код не принят".red());
                 }
