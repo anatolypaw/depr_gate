@@ -263,6 +263,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let url = format!("http://192.168.10.203/exchangemarks/hs/api/rollout?gtin={gtin}");
             print!("        {} {} ... ", "    Передаю в шлюз: ".cyan(), url);
 
+            print!("{}", rollout_marks_json);
+
             let http_client = reqwest::Client::new();
             let resp = match http_client.post(url).body(rollout_marks_json).send().await {
                 Ok(resp) => resp,
