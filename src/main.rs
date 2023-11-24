@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         good_id = (select good_id from goods where gtin = $1::TEXT)
                         and prod_date is not null 
                         and sended_to_gate is null
-                    limit 100",
+                    limit 300",
                     &[&gtin],
                 )
                 .await?;
