@@ -222,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             //Делаем запрос 100 кодов, готовых для выгрузки
             let codes = client
                 .query(
-                    "select serial, crypto, prod_date from codes where 
+                    "select serial, crypto, prod_date, codetype from codes where 
                         good_id = (select good_id from goods where gtin = $1::TEXT)
                         and prod_date is not null 
                         and sended_to_gate is null
