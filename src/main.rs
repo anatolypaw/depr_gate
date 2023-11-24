@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let crypto: &str = code.get("crypto");
                 let proddate: NaiveDate = code.get("prod_date");
                 let proddate = proddate.format("%Y%m%d").to_string();
-                let code_type: i32 = code.get("type");
+                let code_type: i32 = code.get("codetype");
 
                 print!("        {} {} {} {} от {}", gtin, serial, crypto, code_type, &proddate);
 
